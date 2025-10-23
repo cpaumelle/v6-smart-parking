@@ -249,12 +249,13 @@ async def refresh_token(
 
         # Get user from database to verify they still exist and are active
         user = await db.fetchrow("""
-            SELECT u.id, u.email, u.username, u.tenant_id, u.role,
-                   u.is_active, u.created_at,
+            SELECT u.id, u.email, u.name as username, u.is_active, u.created_at,
+                   um.role, um.tenant_id,
                    t.name as tenant_name, t.slug as tenant_slug, t.type as tenant_type
             FROM users u
-            JOIN tenants t ON t.id = u.tenant_id
-            WHERE u.id = $1 AND u.tenant_id = $2
+            JOIN user_memberships um ON um.user_id = u.id
+            JOIN tenants t ON t.id = um.tenant_id
+            WHERE u.id = $1 AND um.tenant_id = $2 AND um.is_active = true
         """, user_id, tenant_id)
 
         if not user:
@@ -283,7 +284,7 @@ async def refresh_token(
         new_refresh_token = create_refresh_token(user['id'], user['tenant_id'])
 
         # Determine if platform admin
-        is_platform_admin = user['tenant_type'] == 'platform' and user['role'] >= 999
+        is_platform_admin = user['tenant_type'] == 'platform' and user['role'] in ['owner', 'admin']
 
         return {
             "access_token": new_access_token,
@@ -381,7 +382,7 @@ async def get_current_user(
             )
 
         # Determine if platform admin
-        is_platform_admin = user['tenant_type'] == 'platform' and user['role'] >= 999
+        is_platform_admin = user['tenant_type'] == 'platform' and user['role'] in ['owner', 'admin']
 
         return {
             "id": str(user['id']),

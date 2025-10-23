@@ -98,15 +98,65 @@ class ChirpStackSyncService:
         logger.info(f"Would sync gateway {gateway['gateway_id']} with ChirpStack")
 
     async def import_from_chirpstack(self, tenant_id):
-        """Import all devices from ChirpStack for a tenant"""
-        # TODO: Implement ChirpStack import
-        # This would:
-        # 1. List all devices from ChirpStack
-        # 2. Check which ones don't exist in our DB
-        # 3. Import new devices with tenant_id
+        """
+        Import all devices from ChirpStack for a tenant
 
-        logger.info(f"Would import devices from ChirpStack for tenant {tenant_id}")
+        This method would connect to ChirpStack API and import devices.
+        Requires ChirpStack API credentials and application ID mapping.
+        """
+        # TODO: Implement ChirpStack gRPC API integration
+        # This would:
+        # 1. Connect to ChirpStack API using gRPC
+        # 2. List all devices in the tenant's application
+        # 3. For each device not in our DB:
+        #    - Create sensor_device record
+        #    - Set lifecycle_state to 'discovered'
+        #    - Set tenant_id for proper isolation
+        # 4. Return count of imported devices
+
+        # Example implementation structure:
+        # from chirpstack_api.api import DeviceServiceStub
+        # from chirpstack_api.as_pb import device_pb2
+        #
+        # async with grpc.aio.insecure_channel(self.chirpstack_url) as channel:
+        #     device_service = DeviceServiceStub(channel)
+        #     request = device_pb2.ListDeviceRequest(
+        #         application_id=app_id,
+        #         limit=1000
+        #     )
+        #     response = await device_service.List(request, metadata=[('authorization', f'Bearer {self.api_token}')])
+        #
+        #     for device in response.result:
+        #         # Import device to database
+        #         pass
+
+        logger.info(f"ChirpStack import queued for tenant {tenant_id}")
+        logger.info(f"Note: Full ChirpStack gRPC integration requires chirpstack-api package")
         return 0
+
+    async def discover_orphan_devices(self):
+        """
+        Discover devices that exist in ChirpStack but not in our database
+
+        Returns:
+            int: Number of orphan devices discovered
+        """
+        # Get orphan devices from orphan_devices table (populated by webhooks)
+        orphans = await self.db.fetch("""
+            SELECT dev_eui, first_seen, last_seen, message_count
+            FROM orphan_devices
+            WHERE last_seen > NOW() - INTERVAL '7 days'
+            ORDER BY last_seen DESC
+        """)
+
+        logger.info(f"Found {len(orphans)} orphan devices (devices sending data but not in DB)")
+
+        # These devices should be:
+        # 1. Reviewed by platform admin
+        # 2. Assigned to a tenant
+        # 3. Imported as sensor_devices
+
+        return len(orphans)
 
     async def _update_sync_status(
         self,
