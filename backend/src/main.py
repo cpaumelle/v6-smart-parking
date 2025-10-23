@@ -41,6 +41,8 @@ app.include_router(auth.router, tags=["authentication"])
 
 # Register webhook endpoints (no authentication required)
 app.include_router(webhooks.router, tags=["webhooks"])
+# Register V5 compatibility endpoint for ChirpStack (no prefix)
+app.include_router(webhooks.v5_compat_router, tags=["webhooks-v5"])
 
 # Register v6 API endpoints
 app.include_router(devices.router, tags=["v6"])

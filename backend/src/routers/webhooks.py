@@ -9,6 +9,9 @@ from ..services.webhook_service import WebhookService
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
+# Legacy V5 compatibility router (no prefix for /api/v1/uplink)
+v5_compat_router = APIRouter(tags=["webhooks-v5-compat"])
+
 
 @router.post("/chirpstack/uplink")
 async def chirpstack_uplink(
@@ -117,3 +120,47 @@ async def webhook_health():
         "service": "parking-webhooks",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+# ============================================
+# V5 COMPATIBILITY ENDPOINT
+# ============================================
+@v5_compat_router.post("/api/v1/uplink")
+async def v5_uplink_compat(
+    request: Request,
+    x_signature: Optional[str] = Header(None, alias="X-Signature")
+):
+    """
+    V5 compatibility endpoint for ChirpStack webhooks
+
+    This endpoint maintains backward compatibility with V5's webhook URL:
+    http://api:8000/api/v1/uplink
+
+    It simply forwards to the new V6 endpoint internally.
+    """
+    # Get raw body for signature validation
+    raw_body = await request.body()
+
+    # Parse JSON
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+    # Get database connection
+    db = await get_db()
+
+    # Create webhook service
+    webhook_service = WebhookService(db)
+
+    # Validate signature (optional in V5)
+    if x_signature:
+        if not webhook_service.validate_signature(raw_body, x_signature):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Process uplink using V6 service
+    try:
+        result = await webhook_service.process_uplink(payload, x_signature)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

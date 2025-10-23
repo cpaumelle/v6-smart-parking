@@ -25,7 +25,9 @@ services:
     container_name: parking-api-v6
     restart: unless-stopped
     networks:
-      - parking-network
+      parking-network:
+        aliases:
+          - api  # Legacy alias for V5 webhook compatibility
     environment:
       # Database (shared with V5)
       DATABASE_URL: postgresql://parking_user:${DB_PASSWORD}@parking-postgres:5432/parking_v6
