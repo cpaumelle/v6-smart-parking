@@ -9,12 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import v6 routers
-from src.routers.v6 import devices, dashboard, gateways, spaces, reservations
-from src.routers import auth, webhooks
+from src.routers.v6 import devices, dashboard, gateways, spaces, reservations, tenants, sites
+from src.routers import auth, webhooks, websocket
 from src.core.database import db
 from src.services.background_jobs import start_background_jobs, stop_background_jobs
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR, format='%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -29,11 +29,15 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:8080",
-        "https://app.example.com"
+        "https://app.example.com",
+        "https://app.parking.verdegris.eu",
+        "https://parking.verdegris.eu",
+        "https://parking.eroundit.eu",
+        "https://api-v6.verdegris.eu"
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
 )
 
 # Register authentication endpoints
@@ -50,68 +54,30 @@ app.include_router(dashboard.router, tags=["v6"])
 app.include_router(gateways.router, tags=["v6"])
 app.include_router(spaces.router, tags=["v6"])
 app.include_router(reservations.router, tags=["v6"])
+app.include_router(tenants.router, tags=["v6"])
+app.include_router(sites.router, tags=["v6"])
+
+# Register WebSocket endpoint
+app.include_router(websocket.router, tags=["websocket"])
 
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup():
     """Initialize database connection and start background jobs on startup"""
     logger.info("Starting Smart Parking Platform v6...")
-
-    # Connect to database
     await db.connect()
     logger.info("Database connected")
-
-    # Start background jobs
-    try:
-        await start_background_jobs(db)
-        logger.info("Background jobs started")
-    except Exception as e:
-        logger.error(f"Failed to start background jobs: {e}")
+    await start_background_jobs(db)
+    logger.info("Background jobs started")
 
 @app.on_event("shutdown")
 async def shutdown():
-    """Stop background jobs and close database connection on shutdown"""
-    logger.info("Shutting down Smart Parking Platform v6...")
-
-    # Stop background jobs
-    try:
-        await stop_background_jobs()
-        logger.info("Background jobs stopped")
-    except Exception as e:
-        logger.error(f"Failed to stop background jobs: {e}")
-
-    # Disconnect from database
+    """Cleanup on shutdown"""
+    await stop_background_jobs()
     await db.disconnect()
-    logger.info("Database disconnected")
+    logger.info("Application shutdown complete")
 
-# Health check
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "version": "6.0.0",
-        "api": "v6",
-        "features": {
-            "multi_tenant": True,
-            "row_level_security": True,
-            "device_pool_management": True,
-            "chirpstack_sync": True
-        }
-    }
-
-# Root endpoint
-@app.get("/")
-async def root():
-    """Root endpoint with API information"""
-    return {
-        "name": "Smart Parking Platform v6",
-        "version": "6.0.0",
-        "description": "Multi-tenant parking management system",
-        "docs": "/docs",
-        "health": "/health"
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"status": "healthy", "version": "6.0.0"}

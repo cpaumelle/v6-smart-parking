@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  parking-frontend-v6:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parking-frontend-v6
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    networks:
+      - parking-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=parking-v5_parking-network"
+
+      # Main frontend route
+      - "traefik.http.routers.parking-frontend-v6.rule=Host(`app.parking.verdegris.eu`)"
+      - "traefik.http.routers.parking-frontend-v6.entrypoints=websecure"
+      - "traefik.http.routers.parking-frontend-v6.tls=true"
+      - "traefik.http.routers.parking-frontend-v6.tls.certresolver=letsencrypt"
+      - "traefik.http.services.parking-frontend-v6.loadbalancer.server.port=80"
+
+      # HTTP to HTTPS redirect
+      - "traefik.http.routers.parking-frontend-v6-http.rule=Host(`app.parking.verdegris.eu`)"
+      - "traefik.http.routers.parking-frontend-v6-http.entrypoints=web"
+      - "traefik.http.routers.parking-frontend-v6-http.middlewares=redirect-to-https@docker"
+
+      # Redirect middleware
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+
+networks:
+  parking-network:
+    external: true
+    name: parking-v5_parking-network

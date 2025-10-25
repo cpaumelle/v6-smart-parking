@@ -9,7 +9,7 @@ from ...core.tenant_context_v6 import get_tenant_context_v6, TenantContextV6
 
 router = APIRouter(prefix="/api/v6/gateways", tags=["gateways-v6"])
 
-@router.get("/")
+@router.get("")
 async def list_gateways(
     include_offline: bool = Query(True, description="Include offline gateways"),
     site_id: Optional[UUID] = Query(None, description="Filter by site ID"),

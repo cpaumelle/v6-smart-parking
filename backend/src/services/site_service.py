@@ -42,7 +42,7 @@ class SiteService:
         if include_stats:
             query = """
                 SELECT s.*,
-                    (SELECT COUNT(*) FROM spaces sp WHERE sp.site_id = s.id AND sp.archived_at IS NULL) as space_count,
+                    (SELECT COUNT(*) FROM spaces sp WHERE sp.site_id = s.id AND sp.deleted_at IS NULL) as space_count,
                     (SELECT COUNT(*) FROM sensor_devices sd WHERE sd.assigned_space_id IN
                         (SELECT id FROM spaces WHERE site_id = s.id)) as device_count
                 FROM sites s
@@ -81,9 +81,9 @@ class SiteService:
 
         site = await self.db.fetchrow("""
             SELECT s.*,
-                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND archived_at IS NULL) as space_count,
-                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND archived_at IS NULL AND current_state = 'free') as free_spaces,
-                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND archived_at IS NULL AND current_state = 'occupied') as occupied_spaces,
+                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND deleted_at IS NULL) as space_count,
+                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND deleted_at IS NULL AND current_state = 'free') as free_spaces,
+                (SELECT COUNT(*) FROM spaces WHERE site_id = s.id AND deleted_at IS NULL AND current_state = 'occupied') as occupied_spaces,
                 (SELECT COUNT(*) FROM gateways WHERE site_id = s.id) as gateway_count
             FROM sites s
             WHERE s.id = $1 AND s.tenant_id = $2
@@ -97,7 +97,7 @@ class SiteService:
     async def create_site(
         self,
         name: str,
-        code: str,
+        slug: str,
         address: Optional[str] = None,
         city: Optional[str] = None,
         state: Optional[str] = None,
@@ -113,7 +113,7 @@ class SiteService:
 
         Args:
             name: Site name
-            code: Unique site code
+            slug: Unique site slug
             address: Street address
             city: City
             state: State/province
@@ -128,35 +128,45 @@ class SiteService:
             dict: Created site
         """
 
-        # Check for duplicate code
+        # Check for duplicate slug
         existing = await self.db.fetchrow("""
-            SELECT id FROM sites WHERE code = $1 AND tenant_id = $2
-        """, code, self.tenant.tenant_id)
+            SELECT id FROM sites WHERE slug = $1 AND tenant_id = $2
+        """, slug, self.tenant.tenant_id)
 
         if existing:
-            raise ValueError(f"Site with code '{code}' already exists")
+            raise ValueError(f"Site with slug '{slug}' already exists")
+
+        # Build location JSONB
+        import json
+        location = {}
+        if address:
+            location['address'] = address
+        if city:
+            location['city'] = city
+        if state:
+            location['state'] = state
+        if postal_code:
+            location['postal_code'] = postal_code
+        if country:
+            location['country'] = country
+        if latitude is not None:
+            location['latitude'] = latitude
+        if longitude is not None:
+            location['longitude'] = longitude
 
         # Create site
-        import json
         site_id = await self.db.fetchval("""
             INSERT INTO sites (
-                tenant_id, name, code, address, city, state,
-                postal_code, country, latitude, longitude,
+                tenant_id, name, slug, location,
                 timezone, metadata, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
             RETURNING id
         """,
             self.tenant.tenant_id,
             name,
-            code,
-            address,
-            city,
-            state,
-            postal_code,
-            country,
-            latitude,
-            longitude,
+            slug,
+            json.dumps(location),
             timezone or 'UTC',
             json.dumps(metadata or {}),
             datetime.utcnow()
@@ -180,21 +190,39 @@ class SiteService:
             raise ValueError(f"Site {site_id} not found")
 
         # Build update query
-        allowed_fields = [
-            'name', 'code', 'address', 'city', 'state',
-            'postal_code', 'country', 'latitude', 'longitude',
-            'timezone', 'metadata'
-        ]
+        import json
+        allowed_direct_fields = ['name', 'slug', 'timezone', 'metadata']
+        location_fields = ['address', 'city', 'state', 'postal_code', 'country', 'latitude', 'longitude']
 
         update_fields = []
         params = []
         param_count = 0
 
+        # Handle location fields - need to update JSONB
+        location_updates = {}
+        for field in location_fields:
+            if field in updates and updates[field] is not None:
+                location_updates[field] = updates[field]
+
+        if location_updates:
+            # Get current location
+            current = await self.db.fetchrow("SELECT location FROM sites WHERE id = $1", site_id)
+            current_location = json.loads(current['location']) if current and current['location'] else {}
+            # Merge updates
+            current_location.update(location_updates)
+            param_count += 1
+            update_fields.append(f"location = ${param_count}")
+            params.append(json.dumps(current_location))
+
+        # Handle direct fields
         for field, value in updates.items():
-            if field in allowed_fields and value is not None:
+            if field in allowed_direct_fields and value is not None:
                 param_count += 1
                 update_fields.append(f"{field} = ${param_count}")
-                params.append(value)
+                if field == 'metadata':
+                    params.append(json.dumps(value) if isinstance(value, dict) else value)
+                else:
+                    params.append(value)
 
         if not update_fields:
             raise ValueError("No valid fields to update")
@@ -236,7 +264,7 @@ class SiteService:
         # Check for spaces
         space_count = await self.db.fetchval("""
             SELECT COUNT(*) FROM spaces
-            WHERE site_id = $1 AND archived_at IS NULL
+            WHERE site_id = $1 AND deleted_at IS NULL
         """, site_id)
 
         if space_count > 0:
@@ -250,16 +278,16 @@ class SiteService:
         if gateway_count > 0:
             raise ValueError(f"Cannot delete site with {gateway_count} gateways")
 
-        # Soft delete (if sites table has archived_at)
+        # Soft delete (if sites table has deleted_at)
         # Otherwise hard delete
         try:
             await self.db.execute("""
                 UPDATE sites
-                SET archived_at = $1, updated_at = $1
+                SET deleted_at = $1, updated_at = $1
                 WHERE id = $2
             """, datetime.utcnow(), site_id)
         except:
-            # If archived_at column doesn't exist, hard delete
+            # If deleted_at column doesn't exist, hard delete
             await self.db.execute("DELETE FROM sites WHERE id = $1", site_id)
 
         return {
@@ -299,7 +327,7 @@ class SiteService:
                 COUNT(*) FILTER (WHERE current_state = 'maintenance') as maintenance,
                 COUNT(*) FILTER (WHERE current_state = 'unknown') as unknown
             FROM spaces
-            WHERE site_id = $1 AND archived_at IS NULL
+            WHERE site_id = $1 AND deleted_at IS NULL
         """, site_id)
 
         total = stats['total_spaces'] or 0
@@ -354,18 +382,23 @@ class SiteService:
         if isinstance(metadata_value, str):
             metadata_value = json.loads(metadata_value) if metadata_value else {}
 
+        # Handle location JSONB
+        location = site.get('location', {})
+        if isinstance(location, str):
+            location = json.loads(location) if location else {}
+
         result = {
             "id": str(site['id']),
             "tenant_id": str(site['tenant_id']),
             "name": site['name'],
-            "code": site['code'],
-            "address": site.get('address'),
-            "city": site.get('city'),
-            "state": site.get('state'),
-            "postal_code": site.get('postal_code'),
-            "country": site.get('country'),
-            "latitude": site.get('latitude'),
-            "longitude": site.get('longitude'),
+            "slug": site.get('slug'),
+            "address": location.get('address'),
+            "city": location.get('city'),
+            "state": location.get('state'),
+            "postal_code": location.get('postal_code'),
+            "country": location.get('country'),
+            "latitude": location.get('latitude'),
+            "longitude": location.get('longitude'),
             "timezone": site.get('timezone'),
             "metadata": metadata_value,
             "created_at": site['created_at'].isoformat() if site.get('created_at') else None,

@@ -78,7 +78,7 @@ async def register(
         # Create user
         user_id = await db.fetchval("""
             INSERT INTO users (
-                email, name, password_hash,
+                email, name, hashed_password,
                 is_active, created_at, updated_at
             )
             VALUES ($1, $2, $3, true, $4, $4)
@@ -152,7 +152,7 @@ async def login(
         # Find user by email (username field in OAuth2 form)
         # Get the first active membership (user could belong to multiple tenants)
         user = await db.fetchrow("""
-            SELECT u.id, u.email, u.name as username, u.password_hash, u.is_active, u.created_at,
+            SELECT u.id, u.email, u.name as username, u.hashed_password, u.is_active, u.created_at,
                    um.tenant_id, um.role, um.is_active as membership_active,
                    t.name as tenant_name, t.slug as tenant_slug, t.type as tenant_type
             FROM users u
@@ -171,7 +171,7 @@ async def login(
             )
 
         # Verify password
-        if not verify_password(form_data.password, user['password_hash']):
+        if not verify_password(form_data.password, user['hashed_password']):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",

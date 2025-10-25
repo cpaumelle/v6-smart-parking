@@ -1,163 +1,233 @@
+version: '3.8'
+
 networks:
-  smart-parking:
-    name: smart-parking-network
+  parking-v6-network:
+    name: parking-v6-network
     driver: bridge
+  parking-v5_parking-network:
+    external: true  # Connect to V5 network for shared Traefik
 
 volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
-  chirpstack_data:
-    driver: local
-  mosquitto_data:
-    driver: local
+  postgres-v6-data:
+    name: parking-v6-postgres-data
+  redis-v6-data:
+    name: parking-v6-redis-data
+  chirpstack-v6-data:
+    name: parking-v6-chirpstack-data
+  mosquitto-v6-data:
+    name: parking-v6-mosquitto-data
 
 services:
-  # PostgreSQL Database
-  postgres:
+  # PostgreSQL Database - V6
+  postgres-v6:
     image: postgres:16-alpine
-    container_name: parking-postgres
+    container_name: parking-postgres-v6
     restart: unless-stopped
     environment:
       POSTGRES_USER: parking_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: parking
       POSTGRES_DB: parking_v6
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
-      - ./scripts/postgres:/scripts:ro
-    ports:
-      - "5432:5432"
+      - postgres-v6-data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d:ro
     networks:
-      - smart-parking
+      - parking-v6-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U parking_user -d parking_v6"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Redis Cache
-  redis:
+  # Redis Cache - V6
+  redis-v6:
     image: redis:7-alpine
-    container_name: parking-redis
+    container_name: parking-redis-v6
     restart: unless-stopped
     command: >
       redis-server
       --appendonly yes
       --appendfsync everysec
-      --maxmemory 256mb
+      --maxmemory 512mb
       --maxmemory-policy allkeys-lru
     volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
+      - redis-v6-data:/data
     networks:
-      - smart-parking
+      - parking-v6-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ChirpStack Network Server
-  chirpstack:
-    image: chirpstack/chirpstack:4
-    container_name: parking-chirpstack
-    restart: unless-stopped
-    depends_on:
-      - postgres
-      - mosquitto
-      - redis
-    volumes:
-      - ./config/chirpstack:/etc/chirpstack
-      - chirpstack_data:/var/lib/chirpstack
-    ports:
-      - "8080:8080"
-    networks:
-      - smart-parking
-    environment:
-      DATABASE_URL: postgresql://parking_user:${DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable
-
-  # Mosquitto MQTT Broker
-  mosquitto:
+  # Mosquitto MQTT Broker - V6 (for LoRaWAN)
+  mosquitto-v6:
     image: eclipse-mosquitto:2
-    container_name: parking-mosquitto
+    container_name: parking-mosquitto-v6
     restart: unless-stopped
     volumes:
-      - ./config/mosquitto:/mosquitto/config
-      - mosquitto_data:/mosquitto/data
-    ports:
-      - "1883:1883"
-      - "9001:9001"
+      - ./config/mosquitto:/mosquitto/config:ro
+      - mosquitto-v6-data:/mosquitto/data
     networks:
-      - smart-parking
+      - parking-v6-network
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 | grep -v Error || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # ChirpStack Gateway Bridge
-  gateway-bridge:
-    image: chirpstack/chirpstack-gateway-bridge:4
-    container_name: parking-gateway-bridge
+  # ChirpStack Network Server - V6
+  chirpstack-v6:
+    image: chirpstack/chirpstack:4
+    container_name: parking-chirpstack-v6
     restart: unless-stopped
     depends_on:
-      - mosquitto
-    ports:
-      - "1700:1700/udp"
+      postgres-v6:
+        condition: service_healthy
+      mosquitto-v6:
+        condition: service_healthy
+      redis-v6:
+        condition: service_healthy
     volumes:
-      - ./config/gateway-bridge:/etc/chirpstack-gateway-bridge
+      - ./config/chirpstack:/etc/chirpstack:ro
+      - chirpstack-v6-data:/var/lib/chirpstack
     networks:
-      - smart-parking
+      - parking-v6-network
+      - parking-v5_parking-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chirpstack-v6.entrypoints=websecure"
+      - "traefik.http.routers.chirpstack-v6.rule=Host(`chirpstack-v6.verdegris.eu`)"
+      - "traefik.http.routers.chirpstack-v6.tls=true"
+      - "traefik.http.routers.chirpstack-v6.tls.certresolver=letsencrypt"
+      - "traefik.http.services.chirpstack-v6.loadbalancer.server.port=8080"
+    environment:
+      DATABASE_URL: postgresql://parking_user:parking@postgres-v6:5432/chirpstack?sslmode=disable
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # API Service (V6)
-  api:
+  # ChirpStack Gateway Bridge - V6
+  gateway-bridge-v6:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    container_name: parking-gateway-bridge-v6
+    restart: unless-stopped
+    depends_on:
+      - mosquitto-v6
+    ports:
+      - "1701:1700/udp"  # Different port from V5 (which uses 1700)
+      - "3002:3001"       # Different port from V5 (which uses 3001)
+    volumes:
+      - ./config/gateway-bridge:/etc/chirpstack-gateway-bridge:ro
+    networks:
+      - parking-v6-network
+
+  # API Service - V6
+  api-v6:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: parking-v6-api:latest
     container_name: parking-api-v6
     restart: unless-stopped
     depends_on:
-      postgres:
+      postgres-v6:
         condition: service_healthy
-      redis:
+      redis-v6:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
-      CHIRPSTACK_HOST: ${CHIRPSTACK_HOST}
-      CHIRPSTACK_API_KEY: ${CHIRPSTACK_API_KEY}
-      SECRET_KEY: ${SECRET_KEY}
-      LOG_LEVEL: ${LOG_LEVEL}
-      CORS_ORIGINS: ${CORS_ORIGINS}
-      USE_V6_API: ${USE_V6_API}
-      ENABLE_RLS: ${ENABLE_RLS}
+      DATABASE_URL: postgresql://parking_user:parking@postgres-v6:5432/parking_v6
+      REDIS_URL: redis://redis-v6:6379/0
+      CHIRPSTACK_HOST: chirpstack-v6:8080
+      CHIRPSTACK_API_KEY: ${CHIRPSTACK_API_KEY:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
-      - ./backend:/app
+      - ./backend/logs:/app/logs
+      - ./backend/uploads:/app/uploads
       - /var/spool/parking-uplinks:/var/spool/parking-uplinks
-    ports:
-      - "8000:8000"
     networks:
-      - smart-parking
-    command: >
-      sh -c "
-        alembic upgrade head &&
-        uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-      "
+      - parking-v6-network
+      - parking-v5_parking-network
+    labels:
+      - "traefik.enable=true"
+      # Main API routes
+      - "traefik.http.routers.api-v6.entrypoints=websecure"
+      - "traefik.http.routers.api-v6.rule=Host(`api-v6.verdegris.eu`)"
+      - "traefik.http.routers.api-v6.tls=true"
+      - "traefik.http.routers.api-v6.tls.certresolver=letsencrypt"
+      - "traefik.http.services.api-v6.loadbalancer.server.port=8000"
+      # CORS headers
+      - "traefik.http.middlewares.api-v6-cors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS,PATCH"
+      - "traefik.http.middlewares.api-v6-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.api-v6-cors.headers.accesscontrolalloworiginlist=https://parking.eroundit.eu,https://app.parking.verdegris.eu,https://parking.verdegris.eu"
+      - "traefik.http.middlewares.api-v6-cors.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.api-v6-cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.api-v6-cors.headers.addvaryheader=true"
+      - "traefik.http.routers.api-v6.middlewares=api-v6-cors"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  # Frontend (React)
-  frontend:
+  # Frontend - V6
+  frontend-v6:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://api-v6.verdegris.eu
+        VITE_WS_URL: wss://api-v6.verdegris.eu
+    image: parking-v6-frontend:latest
     container_name: parking-frontend-v6
     restart: unless-stopped
-    environment:
-      REACT_APP_API_URL: http://localhost:8000
-      REACT_APP_USE_V6_API: true
-      REACT_APP_ENABLE_PLATFORM_ADMIN: true
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    ports:
-      - "3000:3000"
     networks:
-      - smart-parking
+      - parking-v6-network
+      - parking-v5_parking-network
+    labels:
+      - "traefik.enable=true"
+      # Main app domain (eroundit.eu)
+      - "traefik.http.routers.frontend-v6-main.entrypoints=websecure"
+      - "traefik.http.routers.frontend-v6-main.rule=Host(`parking.eroundit.eu`)"
+      - "traefik.http.routers.frontend-v6-main.tls=true"
+      - "traefik.http.routers.frontend-v6-main.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend-v6.loadbalancer.server.port=80"
+      # Alternative domains (verdegris.eu)
+      - "traefik.http.routers.frontend-v6-alt.entrypoints=websecure"
+      - "traefik.http.routers.frontend-v6-alt.rule=Host(`app.parking.verdegris.eu`) || Host(`parking.verdegris.eu`)"
+      - "traefik.http.routers.frontend-v6-alt.tls=true"
+      - "traefik.http.routers.frontend-v6-alt.tls.certresolver=letsencrypt"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Database Admin - Adminer V6
+  adminer-v6:
+    image: adminer:latest
+    container_name: parking-adminer-v6
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres-v6
+      ADMINER_DESIGN: nette
+    networks:
+      - parking-v6-network
+      - parking-v5_parking-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer-v6.entrypoints=websecure"
+      - "traefik.http.routers.adminer-v6.rule=Host(`db-v6.verdegris.eu`)"
+      - "traefik.http.routers.adminer-v6.tls=true"
+      - "traefik.http.routers.adminer-v6.tls.certresolver=letsencrypt"
+      - "traefik.http.services.adminer-v6.loadbalancer.server.port=8080"
+    depends_on:
+      - postgres-v6

@@ -2,10 +2,14 @@
 
 from typing import Optional
 from uuid import UUID
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from enum import IntEnum
+import logging
+
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
 
 class TenantType(str):
     PLATFORM = "platform"
@@ -64,62 +68,43 @@ class TenantContextV6(BaseModel):
             {"is_admin": self.is_platform_admin}
         )
 
-async def get_tenant_context_v6(
-    token: str = Depends(lambda: None)  # Will be replaced with OAuth2 scheme
-) -> TenantContextV6:
+async def get_tenant_context_v6(request: Request) -> TenantContextV6:
     """
     Dependency to get enhanced tenant context from JWT token
-    This is integrated with the JWT authentication system
+    Extracts token from Authorization header
     """
-    from fastapi.security import OAuth2PasswordBearer
-    from ..routers.auth import oauth2_scheme
     from ..core.security import decode_token
     from ..core.database import db as database
 
-    # Get token from Authorization header
-    from fastapi import Request, Depends as FastAPIDep
-    async def get_token_from_header(request: Request) -> str:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid authorization header",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return auth_header.split(" ")[1]
+    logger.error(f"====== TENANT CONTEXT CALLED ======")
+    logger.error(f"Request URL: {request.url}")
+    logger.error(f"Request method: {request.method}")
+    
+    # Extract token from Authorization header
+    auth_header = request.headers.get("Authorization")
+    logger.error(f"Auth header present: {auth_header is not None}")
+    
+    if not auth_header:
+        logger.error("ERROR: No Authorization header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authorization header"
+        )
+    
+    if not auth_header.startswith("Bearer "):
+        logger.error(f"ERROR: Invalid auth header format: {auth_header[:20]}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header format"
+        )
+    
+    token = auth_header.split(" ")[1]
+    logger.error(f"Token extracted: {token[:30]}...")
 
-    # Decode JWT
     try:
-        # Get token from dependency
-        from fastapi import Request
-        import inspect
-        frame = inspect.currentframe().f_back.f_back
-        request = frame.f_locals.get('request')
-        if not request:
-            # Fallback for testing
-            return TenantContextV6(
-                tenant_id=UUID("00000000-0000-0000-0000-000000000000"),
-                tenant_name="Platform",
-                tenant_slug="platform",
-                tenant_type="platform",
-                user_id=UUID("00000000-0000-0000-0000-000000000001"),
-                username="admin",
-                role=Role.PLATFORM_ADMIN,
-                is_platform_admin=True,
-                subscription_tier="enterprise",
-                features={"parking": True, "analytics": True, "api_access": True},
-                limits={"max_devices": 10000, "max_gateways": 100, "max_spaces": 5000}
-            )
-
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid authorization header"
-            )
-
-        token_str = auth_header.split(" ")[1]
-        payload = decode_token(token_str)
+        # Decode JWT token
+        payload = decode_token(token)
+        logger.error(f"Token decoded - user_id: {payload.get('sub')}, tenant_id: {payload.get('tenant_id')}")
 
         # Get user and tenant info from database
         user_info = await database.fetchrow("""
@@ -134,10 +119,13 @@ async def get_tenant_context_v6(
         """, UUID(payload['sub']), UUID(payload['tenant_id']))
 
         if not user_info:
+            logger.error(f"ERROR: User not found for user_id={payload.get('sub')}, tenant_id={payload.get('tenant_id')}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User or tenant not found"
             )
+
+        logger.error(f"User found: {user_info['email']}")
 
         # Determine if platform admin
         is_platform_admin = (
@@ -151,6 +139,8 @@ async def get_tenant_context_v6(
         role_int = role_map.get(user_info['role'], Role.VIEWER)
         if is_platform_admin:
             role_int = Role.PLATFORM_ADMIN
+
+        logger.error(f"SUCCESS: Tenant context created for {user_info['email']}")
 
         return TenantContextV6(
             tenant_id=user_info['tenant_id'],
@@ -169,6 +159,9 @@ async def get_tenant_context_v6(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        logger.error(f"EXCEPTION in tenant_context:")
+        logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Authentication failed: {str(e)}"

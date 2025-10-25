@@ -19,10 +19,12 @@ class AssignDeviceRequest(BaseModel):
 class UnassignDeviceRequest(BaseModel):
     reason: Optional[str] = "Manual unassignment via API"
 
-@router.get("/")
+@router.get("")
 async def list_devices(
     status: Optional[str] = Query(None, description="Filter by status"),
     include_stats: bool = Query(False, description="Include device statistics"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     tenant: TenantContextV6 = Depends(get_tenant_context_v6),
     db = Depends(get_db)
 ):
@@ -35,7 +37,7 @@ async def list_devices(
     - Platform admin on customer tenant: See only that tenant's devices
     """
     service = DeviceServiceV6(db, tenant)
-    return await service.list_devices(status=status, include_stats=include_stats)
+    return await service.list_devices(status=status, include_stats=include_stats, page=page, page_size=page_size)
 
 @router.post("/{device_id}/assign")
 async def assign_device(

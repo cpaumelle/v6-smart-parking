@@ -1,0 +1,12 @@
+{
+  "version": "6.0.0",
+  "build": 48,
+  "buildNumber": "20251025.48",
+  "buildTimestamp": "2025-10-25 04:57:48 UTC",
+  "buildDate": "20251025",
+  "buildTime": "045748",
+  "gitCommit": "48919df",
+  "commit": "48919df",
+  "description": "V6 Smart Parking Platform - Build 48",
+  "environment": "production"
+}

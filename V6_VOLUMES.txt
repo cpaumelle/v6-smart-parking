@@ -1,0 +1,3 @@
+local     parking-v6_v6_logs
+local     parking-v6_v6_spool
+local     parking-v6_v6_uploads

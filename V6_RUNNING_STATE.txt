@@ -1,0 +1,4 @@
+CONTAINER ID   IMAGE                        COMMAND                  CREATED          STATUS                      PORTS      NAMES
+6f0c7303cfe1   parking-v6-frontend:latest   "/docker-entrypoint.…"   13 minutes ago   Up 13 minutes (unhealthy)   80/tcp     parking-frontend-v6
+d147e3ff2575   parking-v6-api:latest        "uvicorn src.main:ap…"   10 hours ago     Up 10 hours (healthy)       8000/tcp   parking-api-v6
+b1e8b6fbc95a   adminer:latest               "entrypoint.sh docke…"   20 hours ago     Up 20 hours                 8080/tcp   parking-adminer-v6

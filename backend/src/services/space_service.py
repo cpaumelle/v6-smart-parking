@@ -153,10 +153,17 @@ class SpaceService:
     ) -> dict:
         """Create a new space"""
 
-        # Verify site belongs to tenant
-        site = await self.db.fetchrow("""
-            SELECT id FROM sites WHERE id = $1 AND tenant_id = $2
-        """, site_id, self.tenant.tenant_id)
+        # Verify site exists and check tenant access
+        if self.tenant.is_platform_admin and self.tenant.is_viewing_platform_tenant:
+            # Platform admin on Platform tenant can access any site
+            site = await self.db.fetchrow("""
+                SELECT id, tenant_id FROM sites WHERE id = $1
+            """, site_id)
+        else:
+            # Regular users or platform admin on customer tenant: check tenant ownership
+            site = await self.db.fetchrow("""
+                SELECT id, tenant_id FROM sites WHERE id = $1 AND tenant_id = $2
+            """, site_id, self.tenant.tenant_id)
 
         if not site:
             raise ValueError(f"Site {site_id} not found or does not belong to your tenant")
@@ -169,7 +176,7 @@ class SpaceService:
         if existing:
             raise ValueError(f"Space with code '{code}' already exists in this site")
 
-        # Create space
+        # Create space (use site's tenant_id, not user's tenant_id)
         import json
         config_json = json.dumps(config or {})
         space_id = await self.db.fetchval("""
@@ -181,7 +188,7 @@ class SpaceService:
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'unknown', $9, $9)
             RETURNING id
         """,
-            self.tenant.tenant_id,
+            site['tenant_id'],  # Use site's tenant_id
             site_id,
             code,
             name or code,
@@ -248,7 +255,7 @@ class SpaceService:
         return await self.get_space(space_id)
 
     async def delete_space(self, space_id: UUID) -> dict:
-        """Delete a space (soft delete by setting archived_at)"""
+        """Delete a space (soft delete by setting deleted_at)"""
 
         # Verify space exists and belongs to tenant
         space = await self.db.fetchrow("""
@@ -272,7 +279,7 @@ class SpaceService:
         # Soft delete
         await self.db.execute("""
             UPDATE spaces
-            SET archived_at = $1, updated_at = $1
+            SET deleted_at = $1, updated_at = $1
             WHERE id = $2
         """, datetime.utcnow(), space_id)
 
@@ -368,7 +375,7 @@ class SpaceService:
                 COUNT(*) as count
             FROM spaces
             WHERE tenant_id = $1
-              AND archived_at IS NULL
+              AND deleted_at IS NULL
         """
         params = [self.tenant.tenant_id]
 

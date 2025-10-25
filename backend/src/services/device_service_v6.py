@@ -14,43 +14,68 @@ class DeviceServiceV6:
     async def list_devices(
         self,
         status: Optional[str] = None,
-        include_stats: bool = False
+        include_stats: bool = False,
+        page: int = 1,
+        page_size: int = 20
     ) -> dict:
-        """List devices with v6 tenant scoping"""
+        """List devices with v6 tenant scoping and pagination"""
+
+        # Build count query
+        count_query = """
+            SELECT COUNT(*) as total
+            FROM sensor_devices
+            WHERE 1=1
+        """
 
         # Build base query
         query = """
             SELECT
-                id, dev_eui, name, tenant_id, status,
-                lifecycle_state, assigned_space_id, assigned_at,
-                last_seen_at, created_at, updated_at
-            FROM sensor_devices
+                sd.id, sd.dev_eui, sd.name, sd.tenant_id, sd.status,
+                sd.lifecycle_state, sd.assigned_space_id, sd.assigned_at,
+                sd.last_seen_at, sd.created_at, sd.updated_at, sd.device_type,
+                s.code as space_code
+            FROM sensor_devices sd
+            LEFT JOIN spaces s ON sd.assigned_space_id = s.id
             WHERE 1=1
         """
         params = []
 
         # Apply tenant filter (RLS will also enforce this)
         if not (self.tenant.is_platform_admin and self.tenant.is_viewing_platform_tenant):
-            query += " AND tenant_id = $1"
+            query += " AND sd.tenant_id = $1"
+            count_query += " AND tenant_id = $1"
             params.append(self.tenant.tenant_id)
 
         # Apply status filter
         if status:
             param_num = len(params) + 1
-            query += f" AND status = ${param_num}"
+            query += f" AND sd.status = ${param_num}"
+            count_query += f" AND status = ${param_num}"
             params.append(status)
 
-        query += " ORDER BY created_at DESC"
+        # Get total count
+        total_result = await self.db.fetchrow(count_query, *params)
+        total = total_result['total'] if total_result else 0
+
+        # Calculate pagination
+        offset = (page - 1) * page_size
+        pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+
+        # Add pagination to query
+        query += " ORDER BY sd.created_at DESC"
+        query += f" LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
+        params.extend([page_size, offset])
 
         # Execute query
         devices = await self.db.fetch(query, *params)
 
-        # Build response
+        # Build response in frontend-expected format
         response = {
-            "devices": [self._device_to_dict(d) for d in devices],
-            "count": len(devices),
-            "tenant_scope": str(self.tenant.tenant_id),
-            "is_cross_tenant": self.tenant.is_platform_admin and self.tenant.is_viewing_platform_tenant
+            "items": [self._device_to_dict(d) for d in devices],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages
         }
 
         # Add statistics if requested
@@ -244,11 +269,15 @@ class DeviceServiceV6:
         return {
             "id": str(device['id']),
             "dev_eui": device['dev_eui'],
+            "device_type": device.get('device_type', 'sensor'),
             "name": device['name'],
             "tenant_id": str(device['tenant_id']),
             "status": device['status'],
             "lifecycle_state": device['lifecycle_state'],
-            "assigned_space_id": str(device['assigned_space_id']) if device['assigned_space_id'] else None,
+            "space_id": str(device['assigned_space_id']) if device['assigned_space_id'] else None,
+            "space_code": device.get('space_code'),
             "assigned_at": device['assigned_at'].isoformat() if device['assigned_at'] else None,
-            "last_seen_at": device['last_seen_at'].isoformat() if device['last_seen_at'] else None
+            "last_seen_at": device['last_seen_at'].isoformat() if device['last_seen_at'] else None,
+            "created_at": device['created_at'].isoformat() if device['created_at'] else None,
+            "updated_at": device['updated_at'].isoformat() if device['updated_at'] else None
         }

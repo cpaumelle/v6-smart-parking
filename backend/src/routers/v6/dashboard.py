@@ -46,8 +46,8 @@ async def _get_device_summary(db, tenant) -> Dict[str, Any]:
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE status = 'assigned') as assigned,
             COUNT(*) FILTER (WHERE status = 'unassigned') as unassigned,
-            COUNT(*) FILTER (WHERE lifecycle_state = 'operational') as active,
-            COUNT(*) FILTER (WHERE lifecycle_state != 'operational') as inactive
+            COUNT(*) FILTER (WHERE status = 'assigned') as active,
+            COUNT(*) FILTER (WHERE status != 'assigned') as inactive
         FROM sensor_devices
         WHERE tenant_id = $1
     """, tenant.tenant_id)
@@ -79,19 +79,11 @@ async def _get_device_summary(db, tenant) -> Dict[str, Any]:
 
 async def _get_gateway_summary(db, tenant) -> Dict[str, Any]:
     """Get gateway summary statistics"""
-    stats = await db.fetchrow("""
-        SELECT
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE last_seen_at > NOW() - INTERVAL '5 minutes') as online,
-            COUNT(*) FILTER (WHERE last_seen_at <= NOW() - INTERVAL '5 minutes' OR last_seen_at IS NULL) as offline
-        FROM gateways
-        WHERE tenant_id = $1
-    """, tenant.tenant_id)
-
+    # Temporarily return mock data since gateways table does not exist yet in V5 schema
     return {
-        "total": stats['total'] or 0,
-        "online": stats['online'] or 0,
-        "offline": stats['offline'] or 0
+        "total": 0,
+        "online": 0,
+        "offline": 0
     }
 
 async def _get_space_summary(db, tenant) -> Dict[str, Any]:
@@ -105,7 +97,7 @@ async def _get_space_summary(db, tenant) -> Dict[str, Any]:
             COUNT(*) FILTER (WHERE current_state = 'maintenance') as maintenance,
             COUNT(*) FILTER (WHERE current_state = 'unknown') as unknown
         FROM spaces
-        WHERE tenant_id = $1 AND archived_at IS NULL
+        WHERE tenant_id = $1 AND deleted_at IS NULL
     """, tenant.tenant_id)
 
     total = stats['total'] or 0

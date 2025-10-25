@@ -18,7 +18,7 @@ from ...schemas.space import (
 router = APIRouter(prefix="/api/v6/spaces", tags=["spaces-v6"])
 
 
-@router.get("/", response_model=dict)
+@router.get("", response_model=dict)
 async def list_spaces(
     site_id: Optional[UUID] = Query(None, description="Filter by site ID"),
     current_state: Optional[str] = Query(None, description="Filter by state (free, occupied, reserved, etc.)"),
@@ -64,7 +64,7 @@ async def get_space(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/", response_model=SpaceResponse, status_code=201)
+@router.post("", response_model=SpaceResponse, status_code=201)
 async def create_space(
     space_data: SpaceCreate,
     tenant: TenantContextV6 = Depends(get_tenant_context_v6),

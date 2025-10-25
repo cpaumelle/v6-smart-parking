@@ -51,8 +51,7 @@ class TenantService:
         # Build query
         query = """
             SELECT id, name, slug, type, is_active,
-                   subscription_tier, subscription_status,
-                   trial_ends_at, features, limits,
+                   subscription_tier, metadata, settings,
                    created_at, updated_at
             FROM tenants
             WHERE 1=1
@@ -125,9 +124,9 @@ class TenantService:
             slug: Unique slug
             tenant_type: Type (platform, customer, trial)
             subscription_tier: Tier (basic, professional, enterprise)
-            trial_days: Trial period in days
-            features: Feature flags
-            limits: Usage limits
+            trial_days: Trial period in days (ignored - not tracked)
+            features: Feature flags (stored in metadata)
+            limits: Usage limits (stored in settings)
 
         Returns:
             dict: Created tenant
@@ -142,12 +141,6 @@ class TenantService:
 
         if existing:
             raise ValueError(f"Tenant with slug '{slug}' already exists")
-
-        # Calculate trial end date
-        trial_ends_at = None
-        if trial_days:
-            from datetime import timedelta
-            trial_ends_at = datetime.utcnow() + timedelta(days=trial_days)
 
         # Default features and limits
         default_features = {
@@ -176,19 +169,16 @@ class TenantService:
         tenant_id = await self.db.fetchval("""
             INSERT INTO tenants (
                 name, slug, type, is_active,
-                subscription_tier, subscription_status,
-                trial_ends_at, features, limits,
+                subscription_tier, metadata, settings,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, true, $4, $5, $6, $7, $8, $9, $9)
+            VALUES ($1, $2, $3, true, $4, $5, $6, $7, $7)
             RETURNING id
         """,
             name,
             slug,
             tenant_type,
             subscription_tier,
-            'trial' if trial_days else 'active',
-            trial_ends_at,
             json.dumps(final_features),
             json.dumps(final_limits),
             datetime.utcnow()
@@ -216,8 +206,7 @@ class TenantService:
         # Build update query
         allowed_fields = [
             'name', 'slug', 'type', 'is_active',
-            'subscription_tier', 'subscription_status',
-            'trial_ends_at', 'features', 'limits'
+            'subscription_tier', 'metadata', 'settings'
         ]
 
         update_fields = []
@@ -260,7 +249,6 @@ class TenantService:
         await self.db.execute("""
             UPDATE tenants
             SET is_active = false,
-                subscription_status = 'suspended',
                 updated_at = $1
             WHERE id = $2
         """, datetime.utcnow(), tenant_id)
@@ -283,7 +271,6 @@ class TenantService:
         await self.db.execute("""
             UPDATE tenants
             SET is_active = true,
-                subscription_status = 'active',
                 updated_at = $1
             WHERE id = $2
         """, datetime.utcnow(), tenant_id)
@@ -315,25 +302,16 @@ class TenantService:
         if tenant['type'] == 'platform':
             raise ValueError("Cannot delete platform tenant")
 
-        # In production, you would:
-        # 1. Archive all data
-        # 2. Cascade delete or soft delete
-        # 3. Send notifications
-        # For now, just mark as deleted
-
+        # Actually delete the tenant (CASCADE will handle related data)
         await self.db.execute("""
-            UPDATE tenants
-            SET is_active = false,
-                subscription_status = 'deleted',
-                updated_at = $1
-            WHERE id = $2
-        """, datetime.utcnow(), tenant_id)
+            DELETE FROM tenants WHERE id = $1
+        """, tenant_id)
 
         return {
             "success": True,
             "tenant_id": str(tenant_id),
             "name": tenant['name'],
-            "message": "Tenant marked as deleted (data archived)"
+            "message": "Tenant deleted successfully"
         }
 
     async def get_platform_stats(self) -> Dict[str, Any]:
@@ -374,7 +352,7 @@ class TenantService:
                 COUNT(*) as total_spaces,
                 COUNT(*) FILTER (WHERE current_state = 'occupied') as occupied_spaces
             FROM spaces
-            WHERE archived_at IS NULL
+            WHERE deleted_at IS NULL
         """)
 
         # Reservation stats
@@ -406,7 +384,7 @@ class TenantService:
                 (SELECT COUNT(*) FROM display_devices WHERE tenant_id = $1) as display_count,
                 (SELECT COUNT(*) FROM gateways WHERE tenant_id = $1) as gateway_count,
                 (SELECT COUNT(*) FROM sites WHERE tenant_id = $1) as site_count,
-                (SELECT COUNT(*) FROM spaces WHERE tenant_id = $1 AND archived_at IS NULL) as space_count,
+                (SELECT COUNT(*) FROM spaces WHERE tenant_id = $1 AND deleted_at IS NULL) as space_count,
                 (SELECT COUNT(*) FROM reservations WHERE tenant_id = $1) as reservation_count
         """, tenant_id)
 
@@ -416,14 +394,22 @@ class TenantService:
         """Convert tenant row to dictionary"""
         import json
 
-        # Handle JSONB fields
-        features = tenant.get('features', {})
-        if isinstance(features, str):
-            features = json.loads(features) if features else {}
+        # Handle JSONB fields - use metadata as features, settings as limits
+        metadata = tenant.get('metadata', {})
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata) if metadata else {}
 
-        limits = tenant.get('limits', {})
-        if isinstance(limits, str):
-            limits = json.loads(limits) if limits else {}
+        settings = tenant.get('settings', {})
+        if isinstance(settings, str):
+            settings = json.loads(settings) if settings else {}
+
+        # Derive subscription_status from is_active and type
+        if not tenant['is_active']:
+            subscription_status = 'suspended'
+        elif tenant.get('type') == 'trial':
+            subscription_status = 'trial'
+        else:
+            subscription_status = 'active'
 
         return {
             "id": str(tenant['id']),
@@ -432,10 +418,10 @@ class TenantService:
             "type": tenant['type'],
             "is_active": tenant['is_active'],
             "subscription_tier": tenant.get('subscription_tier'),
-            "subscription_status": tenant.get('subscription_status'),
-            "trial_ends_at": tenant['trial_ends_at'].isoformat() if tenant.get('trial_ends_at') else None,
-            "features": features,
-            "limits": limits,
+            "subscription_status": subscription_status,
+            "trial_ends_at": None,  # Not tracked in current schema
+            "features": metadata,  # Use metadata as features
+            "limits": settings,    # Use settings as limits
             "created_at": tenant['created_at'].isoformat() if tenant.get('created_at') else None,
             "updated_at": tenant['updated_at'].isoformat() if tenant.get('updated_at') else None
         }

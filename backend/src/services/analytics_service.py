@@ -65,7 +65,7 @@ class AnalyticsService:
                 COUNT(*) as total
             FROM spaces
             WHERE tenant_id = $1
-              AND archived_at IS NULL
+              AND deleted_at IS NULL
         """
         params = [self.tenant.tenant_id]
 
@@ -297,7 +297,7 @@ class AnalyticsService:
             FROM spaces s
             LEFT JOIN reservations r ON r.space_id = s.id AND r.created_at >= $2
             WHERE s.tenant_id = $1
-              AND s.archived_at IS NULL
+              AND s.deleted_at IS NULL
             GROUP BY s.id, s.code, s.name
             ORDER BY reservation_count DESC
             LIMIT 10
@@ -377,7 +377,7 @@ class AnalyticsService:
                 COUNT(*) FILTER (WHERE current_state = 'reserved') as reserved,
                 COUNT(*) FILTER (WHERE current_state = 'maintenance') as maintenance
             FROM spaces
-            WHERE tenant_id = $1 AND archived_at IS NULL
+            WHERE tenant_id = $1 AND deleted_at IS NULL
         """, self.tenant.tenant_id)
 
         total = stats['total_spaces'] or 0

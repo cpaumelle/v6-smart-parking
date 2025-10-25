@@ -49,7 +49,7 @@ async def create_reservation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=ReservationListResponse)
+@router.get("", response_model=ReservationListResponse)
 async def list_reservations(
     space_id: Optional[UUID] = Query(None, description="Filter by space ID"),
     status: Optional[str] = Query(None, description="Filter by status (active, completed, cancelled, expired)"),
